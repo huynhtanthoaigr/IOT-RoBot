@@ -1,0 +1,242 @@
+#include <Servo.h>
+#include <SoftwareSerial.h>
+
+SoftwareSerial BT(2, 3); // RX, TX Bluetooth HC-05
+Servo myServo;
+Servo myServo2;
+Servo sensorServo; // Servo to raise/lower the sensor
+
+#define SENSOR_LEFT_FAR 11    // OUT1 - Left sensor far from the line
+#define SENSOR_LEFT_NEAR 12   // OUT2 - Left sensor near the line
+#define SENSOR_MID 13         // OUT3 - Middle sensor for central alignment
+#define SENSOR_RIGHT_NEAR A0  // OUT4 - Right sensor near the line
+#define SENSOR_RIGHT_FAR A1   // OUT5 - Right sensor far from the line
+
+#define ENA 5
+#define IN1 6
+#define IN2 7
+#define IN3 8
+#define IN4 9
+#define ENB 10
+
+#define BUZZER_PIN A3
+#define SENSOR_SERVO_PIN A4
+
+char command;
+bool lineMode = false;
+bool servo1State = false;
+bool servo2State = false;
+bool sensorServoState = false;
+
+void setup() {
+    Serial.begin(9600);
+    BT.begin(9600);  // Bluetooth communication initialization
+
+    // Pin configuration for sensors and motors
+    pinMode(SENSOR_LEFT_FAR, INPUT);
+    pinMode(SENSOR_LEFT_NEAR, INPUT);
+    pinMode(SENSOR_MID, INPUT);
+    pinMode(SENSOR_RIGHT_NEAR, INPUT);
+    pinMode(SENSOR_RIGHT_FAR, INPUT);
+    pinMode(ENA, OUTPUT);
+    pinMode(ENB, OUTPUT);
+    pinMode(IN1, OUTPUT);
+    pinMode(IN2, OUTPUT);
+    pinMode(IN3, OUTPUT);
+    pinMode(IN4, OUTPUT);
+    pinMode(BUZZER_PIN, OUTPUT);
+
+    // Attach servo motors
+    myServo.attach(4);  // Servo 1 for controlling some cool movement
+    myServo2.attach(A2); // Servo 2 for additional coolness
+    sensorServo.attach(SENSOR_SERVO_PIN);  // Servo for sensor tilt
+
+    // Initialize servo positions (no funny business here)
+    myServo.write(90);
+    myServo2.write(90);
+    sensorServo.write(120);  // Sensor starts in a neutral position
+
+    stopMotors();  // Stop everything for safety... unless you're into chaos.
+}
+
+void loop() {
+    if (BT.available()) {
+        command = BT.read();
+        Serial.println(command);  // Debugging, just in case something goes wrong!
+
+        // Handle Bluetooth commands - the fun begins
+        if (command == 'F') moveForward();
+        else if (command == 'B') moveBackward();
+        else if (command == 'L') turnLeft();  
+        else if (command == 'R') turnRight(); 
+        else if (command == 'S') stopMotors();
+        else if (command == 'P') toggleServo1();
+        else if (command == 'N') toggleServo2();
+        else if (command == 'K') toggleLineMode();
+        else if (command == 'V') turnOnBuzzer();
+    }
+
+    // If line mode is active, let’s follow the line like a pro
+    if (lineMode) {
+        lineFollow();
+    }
+}
+
+void moveForward() {
+    analogWrite(ENA, 150);
+    analogWrite(ENB, 150);
+    digitalWrite(IN1, HIGH);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);  // Forward motion: Full speed ahead!
+}
+
+void moveBackward() {
+    analogWrite(ENA, 150);
+    analogWrite(ENB, 150);
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);  // Backwards mode, just in case you change your mind!
+}
+
+void turnLeft() {
+    analogWrite(ENA, 150);
+    analogWrite(ENB, 150);
+    digitalWrite(IN1, HIGH);  
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, HIGH);  // Turning left, because sometimes right is overrated.
+}
+
+void turnRight() {
+    analogWrite(ENA, 150);
+    analogWrite(ENB, 150);
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, HIGH);
+    digitalWrite(IN3, HIGH);
+    digitalWrite(IN4, LOW);  // Turning right, because why not?
+}
+
+void stopMotors() {
+    digitalWrite(IN1, LOW);
+    digitalWrite(IN2, LOW);
+    digitalWrite(IN3, LOW);
+    digitalWrite(IN4, LOW);  // Stop motors, for when you need a breather.
+}
+
+void toggleServo1() {
+    servo1State = !servo1State;
+    myServo.write(servo1State ? 180 : 110);  // Toggle the first servo position (Drama added!)
+}
+
+void toggleServo2() {
+    servo2State = !servo2State;
+    myServo2.write(servo2State ? 90 : 60);  // Toggle the second servo, for added surprise.
+}
+
+void toggleLineMode() {
+    lineMode = !lineMode;
+    if (lineMode) {
+        sensorServo.write(80);  // Lower the sensor for line following mode
+    } else {
+        sensorServo.write(120);  // Raise it back up when done (safety first!)
+        stopMotors();
+    }
+}
+
+int leftDriftCount = 0;
+int rightDriftCount = 0;
+const int DRIFT_THRESHOLD = 3;  // Only change direction if drifting for 3 steps... we like precision.
+
+void lineFollow() {
+    int left_far = digitalRead(SENSOR_LEFT_FAR);   
+    int left_near = digitalRead(SENSOR_LEFT_NEAR); 
+    int mid = digitalRead(SENSOR_MID);             
+    int right_near = digitalRead(SENSOR_RIGHT_NEAR); 
+    int right_far = digitalRead(SENSOR_RIGHT_FAR);
+
+    // Count how many sensors detect the line (LOW = line detected)
+    int sensorCount = (left_far == LOW) + (left_near == LOW) + (mid == LOW) + (right_near == LOW) + (right_far == LOW);
+
+    // If all sensors detect the line, we’ve reached the goal -> Stop and beep for victory
+    if (sensorCount == 5) {
+        stopMotors();
+        beepBuzzer();  // Victory sound: the best part
+        lineMode = false;  // End line-following mode because why keep going when you're done?
+        return;
+    }
+
+    // If at least 4 sensors detect the line, stop for a brief moment.
+    if (sensorCount >= 4) {
+        stopMotors();
+        return;
+    }
+
+    // If middle sensor detects the line, keep moving straight ahead
+    if (mid == LOW && left_near == HIGH && right_near == HIGH) {
+        leftDriftCount = 0;
+        rightDriftCount = 0;
+        analogWrite(ENA, 180);  // Speed boost when balanced!
+        analogWrite(ENB, 180);
+        moveForward();
+    } 
+    // If slight drift to the left, start adjusting slowly
+    else if (mid == LOW && left_near == LOW) {
+        leftDriftCount++;
+        if (leftDriftCount >= DRIFT_THRESHOLD) {
+            analogWrite(ENA, 140);
+            analogWrite(ENB, 180);
+            turnLeft();  // Time to go left, let's not make it a habit.
+        }
+    } 
+    // If slight drift to the right, start adjusting slowly
+    else if (mid == LOW && right_near == LOW) {
+        rightDriftCount++;
+        if (rightDriftCount >= DRIFT_THRESHOLD) {
+            analogWrite(ENA, 180);
+            analogWrite(ENB, 140);
+            turnRight();  // Go right, because balance is key!
+        }
+    } 
+    // If heavily off-course, make a quick adjustment
+    else if (left_near == LOW) {
+        leftDriftCount = 0;
+        analogWrite(ENA, 120);
+        analogWrite(ENB, 170);
+        turnLeft();  // Immediate correction to the left
+    } 
+    else if (right_near == LOW) {
+        rightDriftCount = 0;
+        analogWrite(ENA, 170);
+        analogWrite(ENB, 120);
+        turnRight();  // Immediate correction to the right
+    }
+    // If the left side is detected far away from the line, go left harder!
+    else if (left_far == LOW) {
+        analogWrite(ENA, 100);
+        analogWrite(ENB, 170);
+        turnLeft();  // Turning left with extra style
+    }
+    // If the right side is detected far away from the line, go right harder!
+    else if (right_far == LOW) {
+        analogWrite(ENA, 170);
+        analogWrite(ENB, 100);
+        turnRight();  // Turning right with extra flair
+    }
+}
+
+void turnOnBuzzer() {
+    digitalWrite(BUZZER_PIN, HIGH);
+    delay(500);
+    digitalWrite(BUZZER_PIN, LOW);  // Buzz for 500ms, just a quick reminder.
+}
+
+void beepBuzzer() {
+    for (int i = 0; i < 3; i++) {  // Beep 3 times for fun (you know you want it)
+        digitalWrite(BUZZER_PIN, HIGH);
+        delay(300);
+        digitalWrite(BUZZER_PIN, LOW);
+        delay(200);
+    }
+} 
